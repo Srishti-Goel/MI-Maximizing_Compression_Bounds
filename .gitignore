@@ -1,3 +1,4 @@
 *.pt
 .venv/
 *.tar
+*__pycache__/
