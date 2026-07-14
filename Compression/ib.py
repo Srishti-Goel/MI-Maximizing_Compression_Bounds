@@ -79,7 +79,7 @@ class IB(nn.Module):
         log_q_cond = self.cond_prob_model(y, z)
 
         # KL divergence (term added in this model)
-        kl = 0.5 * torch.mean(mean ** 2 + logvar.exp() - torch.log(logvar.exp())) * self._beta
+        kl = 0.5 * torch.mean(mean ** 2 + logvar.exp() - torch.log(logvar.exp()))
 
         # Regularization term to prevent the model from just scaling up its output to apparently increase information content
         cov = torch.std(z)**2
@@ -92,7 +92,7 @@ class IB(nn.Module):
             ))
 
         # Putting it all together
-        loss = (log_q_cond).mean() - kl + reg_loss
+        loss = (log_q_cond).mean() - (self._beta * kl) + reg_loss
         
         return loss, log_q_cond.mean(), kl, reg_loss
     
@@ -140,7 +140,7 @@ class IB(nn.Module):
 
                     self.full_losses.append(loss.item())
                     self.log_prob_losses.append(log_q_cond.item())
-                    self.kl_losses.append(kl.item() / self._beta)
+                    self.kl_losses.append(kl.item())
                     self.reg_losses.append(reg_loss.item())
 
                 # Save epoch-averaged losses
@@ -166,7 +166,7 @@ class IB(nn.Module):
                 # Appending to loss-saving lists
                 self.full_losses.append(loss.item())
                 self.log_prob_losses.append(log_q_cond.item())
-                self.kl_losses.append(kl.item()/self._beta)
+                self.kl_losses.append(kl.item())
                 self.reg_losses.append(reg_loss.item())
 
                 if print_losses and epoch % 10 == 0:
