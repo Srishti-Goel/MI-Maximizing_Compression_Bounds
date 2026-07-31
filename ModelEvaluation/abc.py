@@ -1,9 +1,17 @@
+import sys
+import os
+
+sys.path.append(os.path.abspath(".."))
+
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.stats import gaussian_kde, norm, halfnorm
 
 import torch
 
+from SupernovaDataset.config import DATA_VARIANCE_SCALE
 
+SELECT_PERCENT = 2.5e-4
 def distance(sim, obs):
     diff = sim - obs
     if not(np.all(np.isfinite(sim)) and np.all(np.isfinite(obs))):
@@ -100,3 +108,71 @@ def pmc_abc(n_sims, prior, eps = 1e-1):
         print(f"Iter {iteration}, {mean=}, {std=}, Epsilon: {epsilon:4f}, Accepted Particles: {accepted_thetas.shape[0]}")
     plt.plot(stds)
     return accepted_summaries, rejected_summaries, accepted_thetas, rejected_thetas
+
+# TODO: Not sure if this code will work if for multi-dimensional z or y
+# @torch.no_grad()
+def abc_testing(obs, z_data, y_data,
+                true_param=70**2,
+                select_percent=SELECT_PERCENT,
+                plotting=True,
+                param_name="$H_0^2$",
+                method_name='MOPED'):
+    mask = abs(z_data - obs)/abs(obs + 1e-8) < select_percent
+    selected_y = y_data[mask]
+
+    if len(selected_y) == 0:
+        print("No samples selected")
+        return -1
+
+    mu, sigma = norm.fit(selected_y)
+    x = np.linspace(selected_y.min(), selected_y.max(), 1000)
+    kde = gaussian_kde(selected_y)
+
+     # PIT value: fraction of selected posterior samples <= true_param
+    # This is the empirical CDF of q(theta | z_obs) evaluated at the truth
+    selected_y_np = np.asarray(selected_y).flatten()
+    pit_value = np.mean(selected_y_np <= true_param)
+
+    z_score = abs(true_param - mu)/sigma
+
+    if plotting:
+        print(f"Selected {len(selected_y)} samples from test set with compressed value close to observed compressed value.")
+        plt.hist(selected_y,
+                 density=True, alpha=0.5,
+                 label='Samples')
+        plt.plot(x, kde(x),
+                 lw=2, label='KDE')
+        plt.plot(x, norm.pdf(x, mu, sigma),
+                 '--', lw=2,
+                label=fr'Gaussian ($\mu={mu:.2f}, \sigma={sigma:.2f}$)')
+        plt.xlabel(param_name + ' value')
+        plt.ylabel('p(' + param_name + ' | data)')
+        plt.title('Posterior derived from ' + method_name)
+        plt.legend()
+        plt.show()
+
+        plt.scatter(z_data, y_data,
+                    alpha=0.5, s=1,
+                    label=method_name + ' Compressed Data')
+        plt.scatter(obs, true_param,
+                    color='red', s=10, edgecolor='black',
+                    label='compressed Obs')
+        plt.axvline(obs,
+                    color='red', linestyle='dashed', linewidth=1,
+                    label='Compressed Obs')
+        plt.xlabel('Latent z') 
+        plt.ylabel('True ' + param_name + ' values')
+        plt.title('Scatter Plot of ' + method_name + 'Compressed vs True '+ param_name +' values')
+        plt.legend()
+        plt.show()
+
+        p_theta = norm.pdf(x, loc=true_param, scale=DATA_VARIANCE_SCALE)
+        likelihood = kde(x) * p_theta
+        plt.plot(x, likelihood, label='Likelihood')
+        plt.xlabel(param_name + ' value')
+        plt.ylabel('p(data | ' + param_name + ')')
+        plt.title('Likelihood derived from ' + method_name)
+        plt.legend()
+        plt.show()
+
+    return (mu, sigma), kde, z_score.item(), pit_value.item(), len(selected_y)

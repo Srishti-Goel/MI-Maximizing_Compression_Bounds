@@ -75,11 +75,24 @@ class IB(nn.Module):
         # Forward step of the encoder
         mean, logvar, z = self.encoder(x)
 
+        if torch.isnan(mean).any() or torch.isnan(logvar).any() or torch.isnan(z).any():
+            print("Encoder becomes nans first")
+            print("Mean:", torch.isnan(mean))
+            print("Logvar", torch.isnan(logvar))
+            print("z:", torch.isnan(z))
+            return
+
         # Forward step of the conditional probability model
         log_q_cond = self.cond_prob_model(y, z)
+        if torch.isnan(log_q_cond).any():
+            print("cond prob model becomes nans first")
+            return
 
         # KL divergence (term added in this model)
         kl = 0.5 * torch.mean(mean ** 2 + logvar.exp() - torch.log(logvar.exp()))
+        if torch.isnan(kl):
+            print("KL becomes nans first")
+            return
 
         # Regularization term to prevent the model from just scaling up its output to apparently increase information content
         cov = torch.std(z)**2
@@ -90,9 +103,12 @@ class IB(nn.Module):
             ) + (
                 self.reg_type * lamb**2 / (lamb - torch.exp(-2*lamb) + 1e-6)
             ))
+        if torch.isnan(reg_loss):
+            print("Surprise! Reg loss becomes nan first!!")
+            return
 
         # Putting it all together
-        loss = (log_q_cond).mean() - (self._beta * kl) + reg_loss
+        loss = -(log_q_cond).mean() + (self._beta * kl) + reg_loss
         
         return loss, log_q_cond.mean(), kl, reg_loss
     
@@ -129,7 +145,7 @@ class IB(nn.Module):
                     self.optim.zero_grad()
                     loss, log_q_cond, kl, reg_loss = self.compute_loss(xb, yb)
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+                    # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
                     self.optim.step()
 
                     epoch_full += loss.item()
@@ -160,7 +176,7 @@ class IB(nn.Module):
                 # Backward-propogation
                 loss.backward()
                 # Clipping gradients to prevent model from collapsing
-                torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+                # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
                 self.optim.step()
 
                 # Appending to loss-saving lists
@@ -181,4 +197,4 @@ class IB(nn.Module):
     def forward(self, x):
         mean, logvar, z = self.encoder(x)
 
-        return z
+        return mean
