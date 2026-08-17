@@ -19,6 +19,39 @@ def distance(sim, obs):
         return np.inf
     return np.linalg.norm(diff)
 
+def hist_with_error_bars(data, bins=30,
+                         xlabel='Value',
+                         ylabel='Density',
+                         title='Density Histogram with Error Bars',
+                         plot_label='Density',
+                         **kwargs
+                        ):
+    # 1. Calculate RAW counts first (density=False)
+    counts, bin_edges = np.histogram(data, bins=bins)
+    
+    # 2. Calculate Poisson error on the raw counts
+    raw_errors = np.sqrt(counts)
+    
+    # 3. Calculate the normalization factor that converts counts to density
+    # Density factor = Total number of data points * width of each bin
+    bin_widths = np.diff(bin_edges)
+    norm_factor = counts.sum() * bin_widths
+    
+    # 4. Scale both the counts and the errors by the normalization factor
+    densities = counts / norm_factor
+    density_errors = raw_errors / norm_factor
+    
+    bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+
+    # 5. Plot the densities and the scaled density_errors
+    plt.bar(bin_centers, densities, width=bin_widths, alpha=0.7, label=plot_label, **kwargs)
+    plt.errorbar(bin_centers, densities, yerr=density_errors, fmt='o', color='red')
+    
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.legend()
+
 def abc(prior, simulate, obs_summary, N_steps, eps = 1e-1):
     distances=[]
     accepted=[]
@@ -39,8 +72,12 @@ def abc(prior, simulate, obs_summary, N_steps, eps = 1e-1):
             rejected_summaries.append(sim_summary[0, :])
     
     distances = np.array(distances)
-    plt.hist(distances)
-    plt.title('Histogram of ABC distances')
+    hist_with_error_bars(distances,
+        bins=30,
+        xlabel='Distance',
+        ylabel='Frequency',
+        title='Histogram of ABC Distances'
+    )
     plt.show()
 
     print(f"Accepted samples: {len(accepted)}, Rejected samples: {len(rejected)}")
@@ -137,9 +174,12 @@ def abc_testing(obs, z_data, y_data,
 
     if plotting:
         print(f"Selected {len(selected_y)} samples from test set with compressed value close to observed compressed value.")
-        plt.hist(selected_y,
-                 density=True, alpha=0.5,
-                 label='Samples')
+        hist_with_error_bars(selected_y,
+            bins=30,
+            xlabel=param_name + ' value',
+            ylabel='Frequency',
+            title='Histogram of Selected Samples'
+        )
         plt.plot(x, kde(x),
                  lw=2, label='KDE')
         plt.plot(x, norm.pdf(x, mu, sigma),

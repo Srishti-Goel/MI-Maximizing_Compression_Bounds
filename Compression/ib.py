@@ -4,6 +4,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 
+class Bounds():
+    def __init__(self, name, cond_prob_model_class, **kwargs):
+        self.name = name
+        self.cond_prob_model = cond_prob_model_class
+        self.cond_prob_model_kwargs = kwargs
+
 class IB(nn.Module):
     def __init__(self, 
                  encoder,
@@ -83,7 +89,10 @@ class IB(nn.Module):
             return
 
         # Forward step of the conditional probability model
-        log_q_cond = self.cond_prob_model(y, z)
+        z_mean_train = z.mean()
+        z_std_train = z.std()
+        z_normalized = (z - z_mean_train) / z_std_train
+        log_q_cond = self.cond_prob_model(y, z_normalized)
         if torch.isnan(log_q_cond).any():
             print("cond prob model becomes nans first")
             return
@@ -99,7 +108,7 @@ class IB(nn.Module):
         lamb = (cov - 1) + ((1 / (cov + 1e-6)) - 1)
         reg_loss = self._reg_weight * (
             (
-                -(self.reg_type - 1) * cov
+                (1 - self.reg_type) * cov
             ) + (
                 self.reg_type * lamb**2 / (lamb - torch.exp(-2*lamb) + 1e-6)
             ))

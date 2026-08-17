@@ -17,21 +17,14 @@ z_max = 2.0
 z_obs = np.geomspace(z_min, z_max, DATAPOINT_SIZE)  # Logarithmic spacing to cover wide range of distances
 F0 = 1e14  # Reference flux corresponding to zero distance modulus (arbitrary scale)
 
-def create_synthetic_supernovae_dataset(
-        n_samples=1000,
-        h02s=None,
-        print_status=True,
-        data_var=DATA_VARIANCE_SCALE,
-        epsilon=0.0, # Non-gaussianity knob: 0.0 = Gaussian, 1.0 = Non-Gaussian
-        tau=0.0,
-    ):
+def create_synthetic_supernovae_dataset(n_samples=1000, h0s=None, print_status=True, data_var=DATA_VARIANCE_SCALE):
     '''
     Create n_samples numpy datapoints with Hubble Constant H_0^2 = h0s for the respective samples and
     data_var variance of flux noise
 
     Inputs:
     - n_samples(required): No. of samples to be created
-    - h02s(optional): Used to specify the Hubble Constant for the respective samples
+    - h0s(optional): Used to specify the Hubble Constant for the respective samples
         -> Must be a list, even for a single sample creation
     - print_status(optional): True prints "Creating sample x of XX"
     - data_var(optional): The variance of the AWGN noise in flux-space
@@ -55,37 +48,23 @@ def create_synthetic_supernovae_dataset(
     for i in range(n_samples):
         if print_status:
             print(f'\rCreating sample: {i+1} of {n_samples}', end='')
-        if h02s is not None:
-            H02 = h02s[i]
+        if h0s is not None:
+            H0 = h0s[i]
         else:
-            H02 = 70**2 + np.random.normal(0, 5**2)
-        # Add some variation to H0^2 for each sample
+            H0 = 70 + np.random.normal(0, 5)
+        # Add some variation to H0 for each sample
+        H02 = H0**2
 
         flux_true = flux_true_tild * (H02)
 
         sigma_noise = data_var # * np.median(flux_true)
 
         for _ in range(50):  # Try multiple times to ensure positive flux
-            # Standard noise for all points
-            clean_noise = np.random.normal(0, sigma_noise, DATAPOINT_SIZE)
-            
-            # Large artifact noise for contaminated points
-            outlier_noise = np.random.normal(0, 5.0 * sigma_noise, DATAPOINT_SIZE)
-            
-            # Bernoulli mask: 1 with probability epsilon, 0 with probability (1 - epsilon)
-            is_contam = np.random.binomial(1, epsilon, DATAPOINT_SIZE)
-            
-            dust_multiplier = np.exp(-(tau) * np.abs(np.random.normal(size=DATAPOINT_SIZE)))
-        
-            # Apply the dust to the TRUE flux
-            dimmed_flux = flux_true * dust_multiplier
-
-            # Final non-Gaussian noise mixture            
-            flux_obs = (1 - is_contam) * clean_noise + is_contam * outlier_noise + dimmed_flux
-            flux_obs = np.clip(flux_obs, 1e-10, None)  # Ensure no negative flux
-
+            flux_noise = np.random.normal(0, sigma_noise, DATAPOINT_SIZE)  # Additive Gaussian noise in flux space
+            flux_obs = flux_true + flux_noise  # Noisy observed flux
             if np.all(flux_obs > 0):
                 break
+            flux_obs = np.clip(flux_obs, 1e-10, None)  # Ensure no negative flux values
 
         mu_obs = -2.5 * np.log10(flux_obs/F0)  # Convert back to distance modulus
 
@@ -95,7 +74,7 @@ def create_synthetic_supernovae_dataset(
             plt.scatter(z_obs, flux_obs, alpha=0.5, label="Observed")  # Plot the true distance modulus for each sample (optional)
             plt.xlabel("Redshift (z)")
             plt.ylabel("Flux")
-            plt.title(f"Sample {i+1} | $H_0^2$: {H02:.2f}")
+            plt.title(f"Sample {i+1} | $H_0$: {H0:.2f}")
             plt.legend()
             plt.show()
 
@@ -103,13 +82,13 @@ def create_synthetic_supernovae_dataset(
             plt.scatter(z_obs, mu_obs, alpha=0.5, label="Observed")  # Plot the true distance modulus for each sample (optional)
             plt.xlabel("Redshift (z)")
             plt.ylabel("Distance Modulus (mu)")
-            plt.title(f"Sample {i+1} | $H_0^2$: {H02:.2f}")
+            plt.title(f"Sample {i+1} | $H_0$: {H0:.2f}")
             plt.legend()
             plt.show()
 
         flux_data.append(flux_obs)
         mu_noiseless.append(mu_true)
-        h02_data.append(H02)
+        h02_data.append(H0)
 
     dataset = np.array(flux_data)
     mu_noiseless = np.array(mu_noiseless)
@@ -118,17 +97,9 @@ def create_synthetic_supernovae_dataset(
         print('')
     return z_obs, dataset, mu_noiseless, h02_dataset
 
-def create_torch_supernovae_dataset(
-        n_train=1000,
-        n_test=100,
-        h02s_train=None,
-        h02s_test=None,
-        epsilon = 0.0, # Non-gaussianity knob: 0.0 = Gaussian, 1.0 = Non-Gaussian
-        tau = 0.0,
-        print_status=True
-    ):
-    z_obs, flux, mu_noiseless, h02 = create_synthetic_supernovae_dataset(n_train, h02s=h02s_train, epsilon=epsilon, tau=tau, print_status=print_status)
-    _, flux_test, mu_noiseless_test, h02_test = create_synthetic_supernovae_dataset(n_test, h02s=h02s_test, epsilon=epsilon, tau=tau, print_status=print_status)
+def create_torch_supernovae_dataset(n_train=1000, n_test=100, h0s_train=None, h0s_test=None, print_status=True):
+    z_obs, flux, _, h02 = create_synthetic_supernovae_dataset(n_train, h0s=h0s_train, print_status=print_status)
+    _, flux_test, _, h02_test = create_synthetic_supernovae_dataset(n_test, h0s=h0s_test, print_status=print_status)
 
     sims_data = np.zeros((n_train, (DATAPOINT_SIZE+1)), dtype=object)
     sims_data[:, :DATAPOINT_SIZE] = flux

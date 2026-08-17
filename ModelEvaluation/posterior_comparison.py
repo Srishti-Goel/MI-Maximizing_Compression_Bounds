@@ -4,6 +4,8 @@ import torch
 
 def plot_binned_means_and_stds(z, ys,
                                num_bins=11,
+                               plot_results=True,
+                               print_results=True,
                                xlabel="Predicted Latent Variable",
                                title="Scatter Plot of Model Predictions vs True Parameter with Binned Means and Stds"
                             ):
@@ -33,33 +35,40 @@ def plot_binned_means_and_stds(z, ys,
             bin_stds_err.append(np.nan)
     
     # print(f"Expected std of true parameter Y within each bin (due to data noise): {expected_std:.2f}")
-    print(f"Dataset size: {len(ys)}, Number of bins: {num_bins}, Bin width: {window:.2f}")
-
-    print(f"Bin centers: {bin_centers}")
-    print(f"Bin means: {bin_means}")
-    print(f"Bin stds: {bin_stds}")
-    print(f"Bin stds errors: {bin_stds_err}")
-    plt.scatter(z, ys, alpha=0.2, label="Model Predictions")
-    plt.errorbar(bin_centers, bin_means, yerr=bin_stds, fmt="o", color="red", label="Binned mean ± std")
-    plt.xlabel(xlabel)
-    plt.ylabel("True parameter Y")
-    plt.title(title)
-    plt.legend()
-    plt.show()
+    if print_results:
+        print(f"Dataset size: {len(ys)}, Number of bins: {num_bins}, Bin width: {window:.2f}")
+        print(f"Bin centers: {bin_centers}")
+        print(f"Bin means: {bin_means}")
+        print(f"Bin stds: {bin_stds}")
+        print(f"Bin stds errors: {bin_stds_err}")
+    if plot_results:
+        plt.scatter(z, ys, alpha=0.2, label="Model Predictions")
+        plt.errorbar(bin_centers, bin_means, yerr=bin_stds, fmt="o", color="red", label="Binned mean ± std")
+        plt.xlabel(xlabel)
+        plt.ylabel("True parameter Y")
+        plt.title(title)
+        plt.legend()
+        plt.show()
 
     return bin_centers, bin_means, np.array(bin_stds), np.array(bin_stds_err)
 
-def evaluate_posterior_covariance(model, x_test, y_test, xlabel="Predicted Latent Variable"):
+def evaluate_posterior_covariance(model, x_test, y_test, print_results=True, plot_results=True, num_bins=11):
     # model.eval()
     with torch.no_grad():
         z = model(x_test).detach().cpu().numpy()
         _, _, sample_bin_stds, sample_bin_stds_err = plot_binned_means_and_stds(
             z,
             y_test.cpu().numpy(),
-            num_bins=11
+            num_bins=num_bins,
+            plot_results=plot_results,
+            print_results=print_results,
         )
 
         mask = ~np.isnan(sample_bin_stds) & ~np.isnan(sample_bin_stds_err) & (sample_bin_stds > 0)
+
+        if mask.sum() == 0:
+            print("ERROR: No usable sample bins")
+            print(f"{sample_bin_stds=} {sample_bin_stds_err}")
 
         sample_bin_stds = sample_bin_stds[mask]  # Exclude the first and last two bins
         sample_bin_stds_err = sample_bin_stds_err[mask]  # Exclude the first and last two bins

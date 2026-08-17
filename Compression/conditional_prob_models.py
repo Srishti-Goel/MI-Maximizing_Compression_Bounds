@@ -1,43 +1,106 @@
 import torch
 import torch.nn as nn
+import numpy as np
 
 class ConditionalKDE(nn.Module):
+    """
+    A 2D conditional Gaussian-mixture density model over (z, y) pairs,
+    used to evaluate log p(y | z) up to the mixing over z implied by
+    the joint components (i.e. this models the joint p(z, y) mixture
+    and treats it as a KDE-style conditional estimator).
+ 
+    Each mixture component k has:
+      - a center mu_k in R^2 (over the stacked (z, y) vector)
+      - a 2x2 precision matrix P_k = L_k L_k^T, guaranteed symmetric
+        positive-definite by construction (Cholesky parameterization)
+      - a mixture weight pi_k, normalized via log_softmax so that
+        sum_k pi_k = 1
+    """
+ 
     def __init__(self, init_std, num_kde_points=10):
         '''
-        init_std: Any variance scale for the initialization works, but exposing this to prevent hardcoding
+        init_std: Any variance scale for the initialization works, but exposing
+                   this to prevent hardcoding.
         '''
         super().__init__()
-
-        log_h_init = torch.log(torch.ones(num_kde_points, 2, 2) * init_std)  # (num_kde_points, 2, 2)
-        for i in range(num_kde_points):
-            log_h_init[i, 0, 1] = log_h_init[i, 1, 0] = torch.log(torch.tensor(1.0))  # Set off-diagonal to zero (log(1) = 0)
-        
-        # Initialize with the precomputed values
-        self.log_h = nn.Parameter(log_h_init)
+        self.num_kde_points = num_kde_points
+        self.dim = 2  # (z, y)
+ 
+        # Parameterize the (lower-triangular) Cholesky factor L of the
+        # precision matrix P = L @ L.T for each component.
+        # Diagonal entries are stored in log-space to guarantee positivity
+        # (and hence P is guaranteed positive-definite).
+        # Off-diagonal (L[1, 0]) is a free real parameter.
+        #
+        # If we want E[P] ~ (1 / init_std) * I initially (i.e. covariance
+        # ~ init_std * I), we need diag(L)^2 = 1 / init_std, so
+        # log_diag_L = -0.5 * log(init_std).
+        log_diag_init = -0.5 * np.log(init_std)
+ 
+        self.log_diag_L = nn.Parameter(
+            torch.full((num_kde_points, self.dim), log_diag_init)
+        )  # (K, 2) -> diagonal entries of L, in log-space
+        self.off_diag_L = nn.Parameter(
+            torch.zeros(num_kde_points)
+        )  # (K,) -> L[1, 0] entry (L[0, 1] stays 0 by construction)
+ 
         self.centers = nn.Parameter(torch.rand(num_kde_points, 2))
         # (num_kde_points, 2) for (z, y) pairs
-        self.weights = nn.Parameter(torch.rand(num_kde_points))
-        # (num_kde_points,) for the weights of each KDE point
-
+ 
+        self.raw_weights = nn.Parameter(torch.rand(num_kde_points))
+        # (num_kde_points,) unnormalized mixture logits; normalized via
+        # log_softmax at use-time so the mixture weights are a valid
+        # probability distribution.
+ 
+    def _build_L(self):
+        """
+        Build the (K, 2, 2) batch of lower-triangular Cholesky factors.
+        """
+        diag = torch.exp(torch.clamp(self.log_diag_L, min=-10.0, max=10.0))
+        # (K, 2), strictly positive
+ 
+        L = torch.zeros(
+            self.num_kde_points, 2, 2,
+            dtype=diag.dtype, device=diag.device
+        )
+        L[:, 0, 0] = diag[:, 0]
+        L[:, 1, 1] = diag[:, 1]
+        L[:, 1, 0] = self.off_diag_L
+        return L  # (K, 2, 2), lower-triangular, positive diagonal
+ 
     def log_prob(self, y, z):
         '''
-        Calculate the log_prob(y | z)
+        Calculate log p(y, z) under the Gaussian mixture (used as an
+        estimate of the conditional log_prob(y | z) via the KDE joint).
         '''
-        h = torch.exp(torch.clamp(self.log_h, max=10.0, min=1e-4))
-        # (2, 2) covariance matrix for the joint KDE
+        L = self._build_L()  # (K, 2, 2)
+ 
         vec = torch.column_stack([z, y])[:, None, :] - self.centers[None, :, :]
-        # (batch_size, num_kde_points, 2)
-
-        log_k = -0.5 * torch.einsum(
-            'bkd,kde,bke->bk',
-            vec, h, vec
-        )
-        return torch.logsumexp(log_k + self.weights, dim=1)/(vec.shape[0]**2)
+        # (batch_size, K, 2)
+ 
+        # Compute L^T @ vec for each (batch, k): shape (batch, K, 2)
+        # L is lower-triangular so L^T is upper-triangular.
+        Lt_vec = torch.einsum('kde,bkd->bke', L, vec)
+        # quad = vec^T P vec = vec^T L L^T vec = || L^T vec ||^2
+        quad = torch.sum(Lt_vec ** 2, dim=-1)  # (batch, K)
+ 
+        # log|Sigma_k| = -log|P_k| = -2 * sum(log(diag(L_k)))
+        log_diag = torch.log(torch.diagonal(L, dim1=-2, dim2=-1) + 1e-12)  # (K, 2)
+        half_log_det_P = torch.sum(log_diag, dim=-1)  # (K,)  = 0.5 * log|P_k|
+ 
+        const = -0.5 * self.dim * np.log(2 * np.pi)
+ 
+        log_component = const + half_log_det_P[None, :] - 0.5 * quad
+        # (batch, K)
+ 
+        log_weights = torch.log_softmax(self.raw_weights, dim=0)  # (K,), sums to 1 in prob space
+ 
+        return torch.logsumexp(log_component + log_weights[None, :], dim=1)
+        # (batch,) -- NOTE: no spurious division by batch size
+ 
     def forward(self, y, z):
         return self.log_prob(y, z)
-    
-
-
+ 
 
 class AutoregressiveTransform(nn.Module):
     """
@@ -62,10 +125,9 @@ class AutoregressiveTransform(nn.Module):
         )
         
         self.scale_layer = nn.Linear(hidden_dim, y_dim)
-        self.scale_layer.weight.data *= 1e-2
+        # self.scale_layer.weight.data *= 1e-2
         self.translate_layer = nn.Linear(hidden_dim, y_dim)
-        self.translate_layer.bias.data = torch.ones_like(self.translate_layer.bias.data) * translate
-    
+        self.translate_layer.bias.data = torch.ones_like(self.translate_layer.bias.data) * translate    
     def forward(self, y, z):
         """
         Forward transformation: z_out = s(z, y) * y + t(z, y)
@@ -87,7 +149,7 @@ class AutoregressiveTransform(nn.Module):
         y_transformed = torch.exp(scale) * y + translate
         
         # Log determinant of Jacobian (diagonal matrix for autoregressive)
-        log_det_jac = scale.mean(dim=-1)
+        log_det_jac = scale.sum(dim=-1)
         
         return y_transformed, log_det_jac
     
@@ -114,7 +176,7 @@ class AutoregressiveTransform(nn.Module):
         # print(f'{translate.mean()=}, {(y-translate).mean()=}')
         
         # Log det of inverse Jacobian is negative of forward
-        log_det_jac_inv = -scale.mean(dim=-1)
+        log_det_jac_inv = -scale.sum(dim=-1)
         
         return y_original, log_det_jac_inv
 
@@ -133,7 +195,7 @@ class ConditionalNormalizingFlow(nn.Module):
         
         # Stack of autoregressive transformations
         self.transforms = nn.ModuleList([
-            AutoregressiveTransform(y_dim=y_dim, z_dim=z_dim, hidden_dim=hidden_dim, translate=70.0 if i == 0 else 0.0)
+            AutoregressiveTransform(y_dim=y_dim, z_dim=z_dim, hidden_dim=hidden_dim, translate= 0.0) #4900.0 if i == 0 else
             for i in range(num_flows)
         ])
         
@@ -195,7 +257,7 @@ class ConditionalNormalizingFlow(nn.Module):
         # Proper log prob for diagonal Gaussian: sum over dims of [- 0.5*(z-μ)^2/σ^2 - log(σ)]
         # Then add normalization: - 0.5*d*log(2π)
         log_prob_base = -0.5 * ((z0 - base_mean) / base_std) ** 2 - self.base_log_std
-        log_prob_base = log_prob_base.mean(dim=-1) # - 0.5 * z0.shape[-1] * torch.log(torch.tensor(2.0 * torch.pi))
+        log_prob_base = log_prob_base.sum(dim=-1) - 0.5 * z0.shape[-1] * torch.log(torch.tensor(2.0 * torch.pi))
         # print(f'{log_prob_base=}, {z0.shape}')
 
         # Apply change of variables

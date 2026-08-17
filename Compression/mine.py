@@ -37,34 +37,31 @@ def ema_loss(x, running_mean, alpha):
 
 
 class Mine(nn.Module):
-    def __init__(self, T=None, y_dim=1, z_dim=1, hidden_dim=400, 
-                 loss='mine', alpha=0.01, method=None):
+    def __init__(self, T=None, y_dim=1, z_dim=1, hidden_dim=40, 
+                 loss='mine', alpha=0.01):
         super().__init__()
         self.running_mean = 0
         self.loss = loss
         self.alpha = alpha
-        self.method = method
 
         self.T = nn.Sequential(
             nn.Linear(y_dim + z_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
             nn.Linear(hidden_dim, 1),   # no Tanh
-            nn.Tanh()
+            # nn.Tanh()
         )
 
     def forward(self, y, z, z_marg=None):
         if z_marg is None:
             z_marg = z[torch.randperm(y.shape[0])]
 
-        t = 1e2 * self.T(torch.concat((y, z), 1)).mean()
-        t_marg = 1e2 * self.T(torch.concat((y, z_marg), 1))
+        t = 1e1 * self.T(torch.concat((y, z), 1)).mean()
+        t_marg = 1e1 * self.T(torch.concat((y, z_marg), 1))
 
         second_term, self.running_mean = ema_loss(
             t_marg, self.running_mean, self.alpha)
 
-        return -t + second_term
+        return t - second_term
 
     def mi(self, y, z, z_marg=None):
         if isinstance(y, np.ndarray):
@@ -73,5 +70,5 @@ class Mine(nn.Module):
             z = torch.from_numpy(z).float()
 
         with torch.no_grad():
-            mi = -self.forward(y, z, z_marg)
+            mi = self.forward(y, z, z_marg)
         return mi
